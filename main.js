@@ -5,6 +5,7 @@
  */
 
 import * as THREE from 'three';
+import { CelShader } from './cel-shader.js';
 
 // Global variables
 
@@ -36,7 +37,12 @@ const zoomLevels = [0.5, 1, 2, 4];
 let zoomIndex = 1; 
 let cameraRotation = 0;
 
-const VIEWPORT_SCALE = window.innerWidth / 640;
+const keyState = {
+    w: false,
+    a: false,
+    s: false,
+    d: false
+};
 
 // Render offset variables for pixel snapping
 /** Offset for rendering panned movements. */
@@ -56,6 +62,7 @@ let xAngleAdjustedUPCP = 0;
 function init() {
     // Setup event listeners
     document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
     document.addEventListener('mousedown', onMouseDown);
     document.addEventListener('mouseup', onMouseUp);
     document.addEventListener('mousemove', onMouseMove);
@@ -93,7 +100,7 @@ function init() {
         fustrumSize * aspect,
         fustrumSize,
         -fustrumSize,
-        0.1,
+        -1000,
         1000
     );
     setZoom(zoomLevel);
@@ -113,10 +120,42 @@ function init() {
 
     // Create a testing box in the scene
     const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
-    const boxMaterial = new THREE.MeshPhongMaterial({color: 0x44aa88});
+    const boxMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            lightDirection: { value: new THREE.Vector3(1.0, -1.0, 0.0) },
+            lightColor: { value: new THREE.Vector3(1, 1, 1) },
+            tintColor: { value: new THREE.Vector3(152/256, 209/256, 109/256) },
+            colorRamp: { value: createRampTexture([128], [80, 255]) }
+        },
+        vertexShader: CelShader.vert,
+        fragmentShader: CelShader.frag
+    });
     const box = new THREE.Mesh(boxGeometry, boxMaterial);
     box.rotation.y = Math.PI / 4;
     mainScene.add(box);
+
+    // Create a testing sphere in the scene
+    const sphereGeometry = new THREE.SphereGeometry(0.5, 32, 32);
+    const sphereMaterial = new THREE.ShaderMaterial({
+        defines: {
+            SPECULAR_ENABLED: 1
+        },
+        uniforms: {
+            lightDirection: { value: new THREE.Vector3(1.0, -1.0, 0.0) },
+            lightColor: { value: new THREE.Vector3(1, 1, 1) },
+            tintColor: { value: new THREE.Vector3(209/256, 152/256, 109/256) },
+            colorRamp: { value: createRampTexture([70], [80, 255]) },
+
+            specularColor:  { value: new THREE.Color(1, 1, 1) },
+            glossiness:     { value: 10.0 },  
+            specularRamp:   { value: createRampTexture([128], [0, 255]) }
+        },
+        vertexShader: CelShader.vert,
+        fragmentShader: CelShader.frag
+    });
+    const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    sphere.position.set(2, 0, 0); // Position the sphere to the right of the box
+    mainScene.add(sphere);
 
     // Add the camera pivot to the main scene, so its transformation is applied
     mainScene.add(cameraPivot);
@@ -167,19 +206,18 @@ function onMouseMove(event) {
     }
 }
 
-/**
- * Handles key down events to pan the view.
- * W/A/S/D keys translate the render offset.
- *
- * @param {KeyboardEvent} event - The keyboard event.
- */
 function onKeyDown(event) {
-    const moveSpeed = 0.9;
-    if (event.key === 'w') renderOffset.z += moveSpeed;
-    if (event.key === 's') renderOffset.z -= moveSpeed;
-    if (event.key === 'a') renderOffset.x -= moveSpeed;
-    if (event.key === 'd') renderOffset.x += moveSpeed;
+    if (event.key in keyState) {
+        keyState[event.key] = true;
+    }
 }
+
+function onKeyUp(event) {
+    if (event.key in keyState) {
+        keyState[event.key] = false;
+    }
+}
+
 
 /**
  * Handles the mouse scroll event to change the zoom level.
@@ -188,7 +226,6 @@ function onKeyDown(event) {
  * @param {WheelEvent} event - The wheel event.
  */
 function onMouseScroll(event) {
-    console.log(zoomLevel, targetZoomLevel);
     if (Math.abs(zoomLevel - targetZoomLevel) > 0.1) {
         return; // Ignore scroll input if a zoom transition is in progress.
     }
@@ -234,6 +271,15 @@ function snapToPixelGrid(vector, pixelSize) {
     return Math.round(vector / pixelSize) * pixelSize;
 }
 
+function updateCameraPosition() {
+    const moveSpeed = 1; // Fractional movement per frame
+
+    if (keyState.w) renderOffset.z += moveSpeed;
+    if (keyState.s) renderOffset.z -= moveSpeed;
+    if (keyState.a) renderOffset.x -= moveSpeed;
+    if (keyState.d) renderOffset.x += moveSpeed;
+}
+
 /**
  * Applies the render offset to the camera pivot using pixel snapping.
  * This ensures that the displayed scene aligns to the pixel grid for clarity.
@@ -271,7 +317,11 @@ function applyRenderOffset() {
     // Calculate and apply the final offset for the quad that displays the scene.
     const finalOffsetX = -Math.round(renderOffset.x) * unitPerCameraPixel;
     const finalOffsetY = -Math.round(renderOffset.y + renderOffset.z) * unitPerCameraPixel;
-    quadMesh.position.set(finalOffsetX, finalOffsetY, 0);
+    quadMesh.position.set(
+        snapToPixelGrid(finalOffsetX, unitPerCameraPixel),
+        snapToPixelGrid(finalOffsetY, unitPerCameraPixel),
+        0
+    );    
 }
 
 /**
@@ -295,6 +345,39 @@ function setZoom(level) {
     xAngleAdjustedUPCP = pixelUnits.xAngleAdjustedUPCP;
 }
 
+function createRampTexture(breakpoints, values) {
+    while (values.length < breakpoints.length + 1) {
+        values.push(0);
+    }
+
+    const size = 256;
+    const data = new Uint8Array(size);
+
+    let currentValueIndex = 0;
+    for (let i = 0; i < breakpoints[breakpoints.length - 1]; i++) {
+        if (i > breakpoints[currentValueIndex]) {
+            currentValueIndex++;
+        }
+        data[i] = values[currentValueIndex];
+    }
+    for (let i = breakpoints[breakpoints.length - 1]; i < size; i++) {
+        data[i] = values[values.length - 1];
+    }
+
+    const texture = new THREE.DataTexture(
+        data, 
+        size, 1, 
+        THREE.RedFormat, 
+        THREE.UnsignedByteType
+    );
+
+    texture.needsUpdate = true;
+    texture.minFilter = THREE.NearestFilter;
+    texture.magFilter = THREE.NearestFilter;
+
+    return texture;
+}
+
 /**
  * Starts the animation and rendering loop.
  * This function continually updates the scene, processes zoom interpolation,
@@ -306,6 +389,7 @@ function start() {
     zoomLevel = THREE.MathUtils.lerp(zoomLevel, targetZoomLevel, 0.1);
     setZoom(zoomLevel);
     // Apply any panning movements
+    updateCameraPosition();
     applyRenderOffset();
     // Render the main scene to the off-screen target
     renderer.setRenderTarget(renderTarget);
